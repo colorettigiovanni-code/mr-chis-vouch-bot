@@ -1,0 +1,94 @@
+import discord
+from discord import app_commands, ui
+from discord.ext import commands
+import os, datetime, json
+
+CHANNEL_VOUCH_ID = int(os.environ.get("CHANNEL_VOUCH_ID", "0"))
+STATS_FILE = "vouch_stats.json"
+PRODUCTS = [
+    discord.SelectOption(label="Disney+",value="Disney+",emoji="🎬"),
+    discord.SelectOption(label="Netflix",value="Netflix",emoji="🎥"),
+    discord.SelectOption(label="Crunchyroll",value="Crunchyroll",emoji="🍥"),
+    discord.SelectOption(label="DAZN",value="DAZN",emoji="⚽"),
+    discord.SelectOption(label="Tunnelbear",value="Tunnelbear",emoji="🐻"),
+    discord.SelectOption(label="Other",value="Other",emoji="📦"),
+]
+STAR_OPTIONS = [
+    discord.SelectOption(label="1 Star — Poor",value="1",emoji="⭐"),
+    discord.SelectOption(label="2 Stars — Below Average",value="2",emoji="⭐"),
+    discord.SelectOption(label="3 Stars — Average",value="3",emoji="⭐"),
+    discord.SelectOption(label="4 Stars — Good",value="4",emoji="⭐"),
+    discord.SelectOption(label="5 Stars — Excellent",value="5",emoji="⭐"),
+]
+STAR_COLORS={"1":0xED4245,"2":0xE67E22,"3":0xF1C40F,"4":0x57F287,"5":0x00C853}
+SEP="⎯"*38
+def star_bar(r):n=int(r);return"★"*n+"☆"*(5-n)
+def star_label(r):return{"1":"Poor","2":"Below Average","3":"Average","4":"Good","5":"Excellent"}.get(r,"")
+def load_stats():
+    if os.path.exists(STATS_FILE):
+        with open(STATS_FILE)as f:return json.load(f)
+    return{"total_vouches":0,"total_stars":0}
+def save_stats(s):
+    with open(STATS_FILE,"w")as f:json.dump(s,f)
+def avg_rating(s):
+    if s["total_vouches"]==0:return"N/A"
+    return f"{s['total_stars']/s['total_vouches']:.1f}"
+async def update_topic(ch,stats):
+    try:await ch.edit(topic=f"✦ Total Vouches: {stats['total_vouches']}  ·  Avg Rating: {avg_rating(stats)}★  ·  Mr. Chis Resell")
+    except:pass
+class ReviewModal(ui.Modal,title="Submit Your Vouch"):
+    review=ui.TextInput(label="Your Experience",style=discord.TextStyle.paragraph,placeholder="Describe your experience...",min_length=15,max_length=480)
+    def __init__(self,product,stars,author):
+        super().__init__(timeout=300);self.product=product;self.stars=stars;self.author=author
+    async def on_submit(self,interaction):
+        ch=interaction.client.get_channel(CHANNEL_VOUCH_ID)
+        if not ch:await interaction.response.send_message("❌ Channel not found.",ephemeral=True);return
+        stats=load_stats();stats["total_vouches"]+=1;stats["total_stars"]+=int(self.stars);save_stats(stats)
+        n=stats["total_vouches"];avg=avg_rating(stats);bar=star_bar(self.stars)
+        color=STAR_COLORS.get(self.stars,0x2F3136);now=datetime.datetime.utcnow()
+        e=discord.Embed(color=color,timestamp=now)
+        e.set_author(name="MR. CHIS RESELL  ·  VERIFIED VOUCH",icon_url=interaction.client.user.display_avatar.url)
+        e.description=f"\n**❝**  *{self.review.value}*  **❞**\n\n{SEP}\n"
+        e.add_field(name="🛒  PRODUCT",value=f"```\n{self.product}\n```",inline=True)
+        e.add_field(name="⭐  RATING",value=f"```\n{bar}  {self.stars}/5\n```",inline=True)
+        e.add_field(name="📅  DATE",value=f"```\n{now.strftime('%B %d, %Y')}\n```",inline=True)
+        e.add_field(name="\u200b",value=SEP,inline=False)
+        e.add_field(name="👤  CUSTOMER",value=f"{self.author.mention}  ·  `{self.author.display_name}`",inline=True)
+        e.add_field(name="🏷️  VERDICT",value=f"**{star_label(self.stars)}**",inline=True)
+        e.add_field(name="📊  STATS",value=f"`#{n}` vouch  ·  avg **{avg}★**",inline=True)
+        e.set_thumbnail(url=self.author.display_avatar.url)
+        e.set_footer(text=f"✦ Verified Purchase  ·  Mr. Chis Resell  ·  Vouch #{n}")
+        await ch.send(embed=e);await update_topic(ch,stats)
+        c=discord.Embed(description=f"## ✅  Vouch Submitted\n{SEP}\n**Product:** `{self.product}`\n**Rating:** {bar} `{self.stars}/5`\n**Vouch:** `#{n}`  ·  avg **{avg}★**\n\n*Thank you!*",color=color)
+        await interaction.response.send_message(embed=c,ephemeral=True)
+class VouchView(ui.View):
+    def __init__(self,author_id):
+        super().__init__(timeout=180);self.author_id=author_id;self.selected_product=None;self.selected_stars=None;self._author=None
+        ps=ui.Select(placeholder="📦  Choose the product...",options=PRODUCTS,row=0);ps.callback=self.pc;self.add_item(ps)
+        ss=ui.Select(placeholder="⭐  Rate your experience...",options=STAR_OPTIONS,row=1);ss.callback=self.sc;self.add_item(ss)
+        b=ui.Button(label="Submit Review",style=discord.ButtonStyle.success,emoji="✅",row=2);b.callback=self.bc;self.add_item(b)
+    async def interaction_check(self,i):
+        if i.user.id!=self.author_id:await i.response.send_message("⛔ This form belongs to another user.",ephemeral=True);return False
+        self._author=i.user;return True
+    async def pc(self,i):self.selected_product=i.data["values"][0];await i.response.defer()
+    async def sc(self,i):self.selected_stars=i.data["values"][0];await i.response.defer()
+    async def bc(self,i):
+        if not self.selected_product:await i.response.send_message("⚠️ Select a product first.",ephemeral=True);return
+        if not self.selected_stars:await i.response.send_message("⚠️ Select a rating first.",ephemeral=True);return
+        await i.response.send_modal(ReviewModal(self.selected_product,self.selected_stars,self._author or i.user))
+    async def on_timeout(self):
+        for x in self.children:x.disabled=True
+intents=discord.Intents.default();intents.message_content=True
+bot=commands.Bot(command_prefix="!",intents=intents)
+@bot.event
+async def on_ready():
+    await bot.tree.sync();print(f"Bot online: {bot.user}  |  Channel: {CHANNEL_VOUCH_ID}")
+@bot.tree.command(name="vouch",description="Leave a verified review for a Mr. Chis Resell product")
+async def vouch(interaction):
+    stats=load_stats();total=stats["total_vouches"];avg=avg_rating(stats)
+    e=discord.Embed(color=0x2F3136,description=f"**✦  LEAVE A VOUCH**\n**Mr. Chis Resell**\n{SEP}\n\nSelect the product and rating, then click **Submit Review**.\n\n{SEP}\n📊  **{total}** vouches  ·  avg **{avg}★**\n-# 🔒 Private — only you can see this.")
+    e.set_footer(text="✦ Mr. Chis Resell  ·  Vouch System")
+    await interaction.response.send_message(embed=e,view=VouchView(interaction.user.id),ephemeral=True)
+TOKEN=os.environ.get("DISCORD_TOKEN")
+if not TOKEN:raise ValueError("DISCORD_TOKEN missing.")
+bot.run(TOKEN)
